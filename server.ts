@@ -406,8 +406,10 @@ DEBES RESPONDER EN FORMATO JSON ESTRICTO con la siguiente estructura:
       image?.mimeType
     );
 
-    // Append subtle note informing user of the expert engine used
-    expertAnalysis.reply += `\n\n---\n*ℹ️ Diagnóstico técnico emitido mediante el **Motor Experto de Triaje Estructural NSR-10 / AIS**.*`;
+    // If a formal structural classification was produced, append the technical validation note
+    if (expertAnalysis.classification && expertAnalysis.classification !== "No determinada") {
+      expertAnalysis.reply += `\n\n---\n*ℹ️ Diagnóstico técnico emitido conforme a la **Norma Sismorresistente NSR-10 / AIS**.*`;
+    }
 
     return res.json({
       success: true,

@@ -126,10 +126,10 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = ({
               <Markdown>{message.text}</Markdown>
             </div>
 
-            {/* Prominent Risk Card if classification is present */}
+            {/* Prominent Risk Card if an actual structural evaluation classification is present */}
             {message.evaluation &&
-              (message.evaluation.classification ||
-                message.evaluation.recommendation) && (
+              message.evaluation.classification &&
+              message.evaluation.classification !== "No determinada" && (
                 <RiskCard
                   evaluation={message.evaluation}
                   onOpenEmergencyModal={onOpenEmergencyModal}
