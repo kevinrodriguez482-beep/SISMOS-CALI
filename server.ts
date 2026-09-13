@@ -1,13 +1,11 @@
 import express from "express";
 import path from "path";
-import { fileURLToPath } from "url";
+import fs from "fs";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
+import { analyzeWithNSR10ExpertEngine } from "./src/server/expertEngine";
 
 dotenv.config();
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = 3000;
@@ -209,9 +207,13 @@ app.get("/api/earthquakes", async (_req, res) => {
 
 // Structural analysis & chat endpoint
 app.post("/api/chat", async (req, res) => {
-  try {
-    const { messages = [], currentMessage = "", image } = req.body;
+  const { messages = [], currentMessage = "", image } = req.body;
+  const userPrompt =
+    currentMessage ||
+    (messages.length > 0 ? messages[messages.length - 1]?.text : "") ||
+    "";
 
+  try {
     const ai = getGenAI();
 
     const systemInstruction = `
@@ -287,13 +289,11 @@ DEBES RESPONDER EN FORMATO JSON ESTRICTO con la siguiente estructura:
       parts: currentParts,
     });
 
-    // Primary model: gemini-3.1-flash-lite (high quota, fast, free tier)
-    // Fallbacks: gemini-3.1-flash-lite-preview, gemini-3.8-flash
     let response: any = null;
     const modelsToTry = [
-      "gemini-3.1-flash-lite",
-      "gemini-3.1-flash-lite-preview",
       "gemini-3.8-flash",
+      "gemini-flash-latest",
+      "gemini-3.1-flash-lite",
     ];
     let lastError: any = null;
 
@@ -372,9 +372,16 @@ DEBES RESPONDER EN FORMATO JSON ESTRICTO con la siguiente estructura:
       } catch (err: any) {
         lastError = err;
         console.warn(`Attempt ${i + 1} (${modelName}) failed:`, err?.message || err);
-        // If it's a 503 spike and not the last model, wait a moment; if 429 quota, immediately try next model
-        if (i < modelsToTry.length - 1 && !err?.message?.includes("429")) {
-          await new Promise((resolve) => setTimeout(resolve, 1000));
+        // If credits depleted or 429 quota, break immediately to expert engine
+        if (
+          err?.message?.includes("prepayment credits are depleted") ||
+          err?.message?.includes("RESOURCE_EXHAUSTED") ||
+          err?.message?.includes("429")
+        ) {
+          break;
+        }
+        if (i < modelsToTry.length - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 500));
         }
       }
     }
@@ -384,69 +391,38 @@ DEBES RESPONDER EN FORMATO JSON ESTRICTO con la siguiente estructura:
     }
 
     const text = response.text || "{}";
-    try {
-      const parsed = JSON.parse(text);
-      res.json({
-        success: true,
-        data: parsed,
-      });
-    } catch (parseErr) {
-      console.error("Error parsing Gemini JSON:", parseErr, text);
-      res.json({
-        success: true,
-        data: {
-          reply: text,
-          classification: "No determinada",
-          recommendation: "Requiere más información antes de recomendar",
-          visualSignals: [],
-          urgentActionRequired: false,
-          needsMorePhotos: true,
-          followUpQuestions: [
-            "¿La grieta traspasa la pared de lado a lado?",
-            "¿Las puertas o ventanas abren con normalidad o se han atascado?",
-          ],
-        },
-      });
-    }
-  } catch (error: any) {
-    console.error("Error in /api/chat:", error);
-    const isRateLimit =
-      error?.message?.includes("429") || error?.message?.includes("quota");
-    const isServiceHighDemand =
-      error?.message?.includes("503") ||
-      error?.message?.includes("high demand") ||
-      error?.message?.includes("UNAVAILABLE");
-
-    const friendlyReply = isRateLimit
-      ? "El asistente de evaluación está procesando una alta demanda de consultas en este momento. Por favor espera unos segundos y reintenta tu consulta.\n\n⚠️ **Regla de seguridad preventiva:** Si observas grietas profundas en columnas o vigas, concreto desprendido, varillas a la vista o escuchas ruidos de reacomodo, **evacúa de inmediato** a una zona abierta y comunícate con la **Línea de Emergencias 123** o **Bomberos 119** en Colombia."
-      : isServiceHighDemand
-      ? "El servicio de análisis con IA está experimentando una alta afluencia temporal de consultas simultáneas tras el evento sísmico.\n\n⚠️ **Precaución inmediata:** Si el daño reportado está en una **columna o viga principal**, o si observas desprendimientos, pandeo o inclinación, **no permanezcas en el lugar: evacúa de inmediato** hacia un punto de encuentro abierto y llama a la **Línea 123** o a **Bomberos 119**."
-      : "Se presentó una pausa momentánea en la comunicación con el servicio de análisis. Si la edificación presenta ruidos, deformaciones o grietas profundas en elementos estructurales, prioriza la evacuación preventiva.";
-
-    res.json({
+    const parsed = JSON.parse(text);
+    return res.json({
       success: true,
-      data: {
-        reply: friendlyReply,
-        classification: "No determinada",
-        recommendation: "Requiere más información antes de recomendar",
-        visualSignals: ["Evaluación preliminar en curso"],
-        urgentActionRequired: false,
-        needsMorePhotos: true,
-        followUpQuestions: [
-          "¿La grieta está en una columna principal de soporte o en un muro divisorio?",
-          "¿Observas varillas de acero expuestas o desmoronamiento de concreto?",
-          "¿Las puertas o ventanas se atascaron tras el movimiento telúrico?",
-        ],
-        calmMessage:
-          "Mantén la calma, respira profundo y ubícate en un lugar seguro y despejado mientras confirmas la evaluación.",
-      },
+      data: parsed,
+    });
+  } catch (error: any) {
+    console.warn("Falling back to Colombian NSR-10 Expert Engine:", error?.message || error);
+
+    // Run the domain-specific NSR-10 structural triaging engine
+    const expertAnalysis = analyzeWithNSR10ExpertEngine(
+      userPrompt,
+      Boolean(image && image.base64),
+      image?.mimeType
+    );
+
+    // Append subtle note informing user of the expert engine used
+    expertAnalysis.reply += `\n\n---\n*ℹ️ Diagnóstico técnico emitido mediante el **Motor Experto de Triaje Estructural NSR-10 / AIS**.*`;
+
+    return res.json({
+      success: true,
+      data: expertAnalysis,
     });
   }
 });
 
 // Setup Vite middleware in dev or serve static files in production
 async function startServer() {
-  if (process.env.NODE_ENV !== "production") {
+  const isProduction =
+    process.env.NODE_ENV === "production" ||
+    Boolean(process.argv[1] && process.argv[1].includes("dist"));
+
+  if (!isProduction) {
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -454,10 +430,15 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), "dist");
+    const distPath = path.resolve(process.cwd(), "dist");
     app.use(express.static(distPath));
     app.get("*", (_req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
+      const indexPath = path.join(distPath, "index.html");
+      if (fs.existsSync(indexPath)) {
+        res.sendFile(indexPath);
+      } else {
+        res.status(404).send("Build artifacts not found. Please run npm run build.");
+      }
     });
   }
 
