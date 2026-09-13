@@ -1,0 +1,6 @@
+{
+  "name": "SismoScan",
+  "description": "Asistente preliminar de evaluación de riesgo estructural post-sismo para edificaciones en Colombia (ODS 9).",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
